@@ -1,0 +1,161 @@
+{
+	"name": "sql_gen2_dataingest",
+	"properties": {
+		"activities": [
+			{
+				"name": "GetOldWatermark",
+				"type": "Lookup",
+				"dependsOn": [],
+				"policy": {
+					"timeout": "0.12:00:00",
+					"retry": 0,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"source": {
+						"type": "JsonSource",
+						"storeSettings": {
+							"type": "AzureBlobFSReadSettings",
+							"recursive": true,
+							"enablePartitionDiscovery": false
+						},
+						"formatSettings": {
+							"type": "JsonReadSettings"
+						}
+					},
+					"dataset": {
+						"referenceName": "DS_WatermarkFile",
+						"type": "DatasetReference"
+					}
+				}
+			},
+			{
+				"name": "SetProcessingDate",
+				"type": "SetVariable",
+				"dependsOn": [
+					{
+						"activity": "GetOldWatermark",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"variableName": "v_ProcessingDate",
+					"value": {
+						"value": "@if(\n    equals(pipeline().parameters.ManualProcessingDate, '1900-01-01'),\n    activity('GetOldWatermark').output.firstRow.currentWatermark,\n    pipeline().parameters.ManualProcessingDate\n)\n",
+						"type": "Expression"
+					}
+				}
+			},
+			{
+				"name": "CheckforNewData",
+				"type": "Lookup",
+				"dependsOn": [
+					{
+						"activity": "SetProcessingDate",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "0.12:00:00",
+					"retry": 0,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"source": {
+						"type": "AzureSqlSource",
+						"sqlReaderQuery": {
+							"value": "SELECT COUNT(*) as NewDataCount \nFROM @{pipeline().parameters.SourceTableName} \nWHERE last_updated > '@{variables('v_ProcessingDate')}'\n",
+							"type": "Expression"
+						},
+						"queryTimeout": "02:00:00",
+						"partitionOption": "None"
+					},
+					"dataset": {
+						"referenceName": "DS_SourceSqlTable",
+						"type": "DatasetReference"
+					}
+				}
+			},
+			{
+				"name": "NewDataFound",
+				"type": "IfCondition",
+				"dependsOn": [
+					{
+						"activity": "CheckforNewData",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"userProperties": [],
+				"typeProperties": {
+					"expression": {
+						"value": "@greater(activity('CheckforNewData').output.firstRow.NewDataCount, 0)\n",
+						"type": "Expression"
+					},
+					"ifTrueActivities": [
+						{
+							"name": "Execute_PL_Worker_Load",
+							"type": "ExecutePipeline",
+							"dependsOn": [],
+							"policy": {
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"pipeline": {
+									"referenceName": "PL_Worker_Load",
+									"type": "PipelineReference"
+								},
+								"waitOnCompletion": true,
+								"parameters": {
+									"p_ProcessingDate": {
+										"value": "@variables('v_ProcessingDate')",
+										"type": "Expression"
+									},
+									"p_SourceTableName": {
+										"value": "@pipeline().parameters.SourceTableName",
+										"type": "Expression"
+									}
+								}
+							}
+						}
+					]
+				}
+			}
+		],
+		"parameters": {
+			"SourceTableName": {
+				"type": "string",
+				"defaultValue": "orders"
+			},
+			"ManualProcessingDate": {
+				"type": "string",
+				"defaultValue": "1900-01-01"
+			}
+		},
+		"variables": {
+			"v_ProcessingDate": {
+				"type": "String"
+			}
+		},
+		"annotations": [],
+		"lastPublishTime": "2025-12-09T10:07:05Z"
+	},
+	"type": "Microsoft.DataFactory/factories/pipelines"
+}
